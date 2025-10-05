@@ -8,6 +8,7 @@ const bcrypt = require("bcrypt");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const util = require("util");
+const path = require("path");
 
 const app = express();
 
@@ -892,10 +893,14 @@ app.get("/", (req, res) => res.json({
   environment: process.env.NODE_ENV || 'development'
 }));
 
-// 404 handler
-app.use((req, res) => {
-  res.status(404).json({ message: "Route not found" });
-});
+// Serve React build in production - MUST be after all API routes
+if (process.env.NODE_ENV === 'production') {
+  app.use(express.static(path.join(__dirname, '../frontend/build')));
+  
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, '../frontend/build/index.html'));
+  });
+}
 
 // Error handler
 app.use((err, req, res, next) => {
@@ -908,7 +913,7 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 8081;
 app.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
-  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🔒 CORS enabled for: ${process.env.FRONTEND_URL || 'http://localhost:3000'}`);
+  console.log(`Server running on port ${PORT}`);
+  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`CORS enabled for: ${process.env.FRONTEND_URL || 'http://localhost:3000'}`);
 });
