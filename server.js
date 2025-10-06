@@ -897,7 +897,8 @@ app.get("/", (req, res) => res.json({
 if (process.env.NODE_ENV === 'production') {
   app.use(express.static(path.join(__dirname, '../frontend/dist')));
   
-  app.get('*', (req, res) => {
+  // Catch-all route for React Router - use proper Express 5 syntax
+  app.use((req, res, next) => {
     res.sendFile(path.join(__dirname, '../frontend/dist/index.html'));
   });
 }
