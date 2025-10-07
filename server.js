@@ -904,6 +904,50 @@ if (process.env.NODE_ENV === 'production') {
   });
 }
 
+// Update product
+app.put("/products/:productId", async (req, res) => {
+  const { productId } = req.params;
+  const { product_name, product_desc, category, product_price, barcode, org_id } = req.body;
+
+  try {
+    const result = await query(
+      "UPDATE products SET product_name = ?, product_desc = ?, category = ?, product_price = ?, barcode = ? WHERE product_id = ? AND org_id = ?",
+      [product_name, product_desc, category, product_price, barcode, productId, org_id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: "Product not found" });
+    }
+
+    res.json({ message: "Product updated successfully" });
+  } catch (err) {
+    console.error("Update product error:", err);
+    res.status(500).json({ message: "DB error", error: err.message });
+  }
+});
+
+// Delete product
+app.delete("/products/:productId", async (req, res) => {
+  const { productId } = req.params;
+  const { org_id } = req.body;
+
+  try {
+    const result = await query(
+      "DELETE FROM products WHERE product_id = ? AND org_id = ?",
+      [productId, org_id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: "Product not found" });
+    }
+
+    res.json({ message: "Product deleted successfully" });
+  } catch (err) {
+    console.error("Delete product error:", err);
+    res.status(500).json({ message: "DB error", error: err.message });
+  }
+});
+
 // Error handler
 app.use((err, req, res, next) => {
   console.error("Unhandled error:", err);
