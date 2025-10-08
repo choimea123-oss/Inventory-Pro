@@ -2,17 +2,17 @@
 require('dotenv').config(); // Load environment variables FIRST
 
 const express = require("express");
-const mysql = require("mysql2");
+const mysql = require("mysql2/promise"); // CHANGED: Use promise version
 const cors = require("cors");
 const bcrypt = require("bcrypt");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
-const util = require("util");
 const path = require("path");
 
 const app = express();
 
 app.set('trust proxy', 1);
+
 // Security middleware
 app.use(helmet());
 
@@ -28,46 +28,73 @@ app.use(express.json());
 
 // Rate limiting for authentication endpoints
 const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // 5 attempts
+  windowMs: 15 * 60 * 1000,
+  max: 5,
   message: "Too many attempts, please try again later"
 });
 
 // General API rate limiter
 const generalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 100 // 100 requests per 15 minutes
+  max: 100
 });
 
 app.use('/api/', generalLimiter);
 
-// ====== DATABASE CONNECTION ======
-const db = mysql.createConnection({
+// ====== DATABASE CONNECTION POOL ======
+const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
   password: process.env.DB_PASSWORD || "",
   database: process.env.DB_NAME || "inventory",
+  waitForConnections: true,
+  connectionLimit: 10,
+  maxIdle: 10,
+  idleTimeout: 60000,
+  queueLimit: 0,
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 0
 });
 
-db.connect((err) => {
-  if (err) {
+// Test pool on startup
+pool.getConnection()
+  .then(connection => {
+    console.log("✅ Connected to MySQL database!");
+    console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+    connection.release();
+  })
+  .catch(err => {
     console.error("❌ MySQL connection error:", err);
     process.exit(1);
-  }
-  console.log("✅ Connected to MySQL database!");
-  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-});
+  });
 
-// Promisify database functions
-const query = util.promisify(db.query).bind(db);
-const beginTransaction = util.promisify(db.beginTransaction).bind(db);
-const commit = util.promisify(db.commit).bind(db);
-const rollback = util.promisify(db.rollback).bind(db);
+// Helper function for queries (backwards compatible)
+async function query(sql, params) {
+  const [rows] = await pool.query(sql, params);
+  return rows;
+}
+
+// Transaction helpers
+async function beginTransaction() {
+  const connection = await pool.getConnection();
+  await connection.beginTransaction();
+  return connection;
+}
+
+async function commit(connection) {
+  await connection.commit();
+  connection.release();
+}
+
+async function rollback(connection) {
+  await connection.rollback();
+  connection.release();
+}
 
 // ===== Helper: Safe Rollback =====
-async function safeRollback() {
+async function safeRollback(connection) {
   try {
-    await rollback();
+    await rollback(connection);
   } catch (err) {
     console.error("⚠️ Rollback failed:", err && err.message ? err.message : err);
   }
@@ -107,10 +134,11 @@ app.post("/register-organization", authLimiter, async (req, res) => {
     });
   }
 
+  let connection;
   try {
-    await beginTransaction();
+    connection = await beginTransaction();
 
-    const orgResult = await query(
+    const [orgResult] = await connection.query(
       "INSERT INTO organizations (org_name, domain_name) VALUES (?, ?)",
       [finalOrgName, domainName]
     );
@@ -118,12 +146,12 @@ app.post("/register-organization", authLimiter, async (req, res) => {
 
     const bcryptRounds = parseInt(process.env.BCRYPT_ROUNDS) || 10;
     const hashed = await bcrypt.hash(password, bcryptRounds);
-    await query(
+    await connection.query(
       "INSERT INTO users (username, password, role, org_id, branch_id) VALUES (?, ?, 'admin', ?, NULL)",
       [username, hashed, orgId]
     );
 
-    await commit();
+    await commit(connection);
     return res.json({
       success: true,
       message: "Organization and admin created successfully! Please create your first branch.",
@@ -131,7 +159,7 @@ app.post("/register-organization", authLimiter, async (req, res) => {
       org_name: finalOrgName,
     });
   } catch (err) {
-    await safeRollback();
+    if (connection) await safeRollback(connection);
 
     if (err && err.code === "ER_DUP_ENTRY") {
       const msg = err.message || "";
@@ -335,26 +363,27 @@ app.post("/products/add", async (req, res) => {
     return res.status(400).json({ message: "Invalid quantity" });
   }
 
+  let connection;
   try {
-    await beginTransaction();
+    connection = await beginTransaction();
 
-    const productResult = await query(
+    const [productResult] = await connection.query(
       "INSERT INTO products (product_name, product_desc, category, product_price, barcode, org_id, branch_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
       [product_name, product_desc || null, category || null, priceNum, barcode || null, org_id, branch_id]
     );
 
     const productId = productResult.insertId;
 
-    await query(
+    await connection.query(
       "INSERT INTO product_stock (product_id, branch_id, quantity, last_updated) VALUES (?, ?, ?, NOW())",
       [productId, branch_id, qtyNum]
     );
 
-    await commit();
+    await commit(connection);
     return res.json({ message: "Product added with stock", product_id: productId });
   } catch (err) {
     console.error("POST /products/add error:", err);
-    await safeRollback();
+    if (connection) await safeRollback(connection);
     return res.status(500).json({ message: "DB error", error: err.message });
   }
 });
@@ -504,10 +533,11 @@ app.post("/sales/create", async (req, res) => {
     }
   }
 
+  let connection;
   try {
-    await beginTransaction();
+    connection = await beginTransaction();
 
-    const branchCheck = await query(
+    const [branchCheck] = await connection.query(
       "SELECT * FROM branches WHERE branch_id = ? AND org_id = ?",
       [branch_id, org_id]
     );
@@ -515,17 +545,17 @@ app.post("/sales/create", async (req, res) => {
       throw new Error("Branch not found");
     }
 
-    const saleRes = await query(
+    const [saleRes] = await connection.query(
       "INSERT INTO sales (branch_id, sale_date, total_amount) VALUES (?, NOW(), ?)",
       [branch_id, total_amount]
     );
     const saleId = saleRes.insertId;
 
     const itemsValues = items.map((i) => [saleId, i.product_id, i.quantity, i.unit_price]);
-    await query("INSERT INTO sale_items (sale_id, product_id, quantity, unit_price) VALUES ?", [itemsValues]);
+    await connection.query("INSERT INTO sale_items (sale_id, product_id, quantity, unit_price) VALUES ?", [itemsValues]);
 
     for (const it of items) {
-      const upRes = await query(
+      const [upRes] = await connection.query(
         "UPDATE product_stock SET quantity = quantity - ?, last_updated = NOW() WHERE product_id = ? AND branch_id = ?",
         [it.quantity, it.product_id, branch_id]
       );
@@ -535,11 +565,11 @@ app.post("/sales/create", async (req, res) => {
       }
     }
 
-    await commit();
+    await commit(connection);
     return res.json({ message: "Sale recorded", sale_id: saleId });
   } catch (err) {
     console.error("POST /sales/create error:", err);
-    await safeRollback();
+    if (connection) await safeRollback(connection);
     return res.status(500).json({ message: "DB error", error: err.message });
   }
 });
@@ -894,16 +924,6 @@ app.get("/", (req, res) => res.json({
   environment: process.env.NODE_ENV || 'development'
 }));
 
-// Serve React build in production - MUST be after all API routes
-if (process.env.NODE_ENV === 'production') {
-  app.use(express.static(path.join(__dirname, '../frontend/dist')));
-  
-  // Catch-all route for React Router - use proper Express 5 syntax
-  app.use((req, res, next) => {
-    res.sendFile(path.join(__dirname, '../frontend/dist/index.html'));
-  });
-}
-
 // Update product
 app.put("/products/:productId", async (req, res) => {
   const { productId } = req.params;
@@ -947,6 +967,16 @@ app.delete("/products/:productId", async (req, res) => {
     res.status(500).json({ message: "DB error", error: err.message });
   }
 });
+
+// Serve React build in production - MUST be after all API routes
+if (process.env.NODE_ENV === 'production') {
+  app.use(express.static(path.join(__dirname, '../frontend/dist')));
+  
+  // Catch-all route for React Router
+  app.use((req, res, next) => {
+    res.sendFile(path.join(__dirname, '../frontend/dist/index.html'));
+  });
+}
 
 // Error handler
 app.use((err, req, res, next) => {
