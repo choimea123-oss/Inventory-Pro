@@ -114,13 +114,12 @@ app.post("/register-organization", authLimiter, async (req, res) => {
     username,
     password,
     organizationName,
-    domainName,
     orgName,
   } = req.body;
 
   const finalOrgName = organizationName || orgName;
 
-  if (!username || !password || !finalOrgName || !domainName) {
+  if (!username || !password || !finalOrgName) {
     return res.status(400).json({ message: "All fields required" });
   }
 
@@ -128,19 +127,13 @@ app.post("/register-organization", authLimiter, async (req, res) => {
     return res.status(400).json({ message: "Username must not contain spaces" });
   }
 
-  if (!/^[a-z0-9-]+$/.test(domainName)) {
-    return res.status(400).json({
-      message: "Domain name can only contain lowercase letters, numbers, and hyphens",
-    });
-  }
-
   let connection;
   try {
     connection = await beginTransaction();
 
     const [orgResult] = await connection.query(
-      "INSERT INTO organizations (org_name, domain_name) VALUES (?, ?)",
-      [finalOrgName, domainName]
+      "INSERT INTO organizations (org_name) VALUES (?)",
+      [finalOrgName]
     );
     const orgId = orgResult.insertId;
 
@@ -163,9 +156,7 @@ app.post("/register-organization", authLimiter, async (req, res) => {
 
     if (err && err.code === "ER_DUP_ENTRY") {
       const msg = err.message || "";
-      if (msg.includes("domain_name")) {
-        return res.status(400).json({ message: "Domain name already taken" });
-      } else if (msg.includes("username")) {
+      if (msg.includes("username")) {
         return res.status(400).json({ message: "Username already exists" });
       } else {
         return res.status(400).json({ message: "Organization name already exists" });
