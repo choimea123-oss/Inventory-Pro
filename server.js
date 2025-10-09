@@ -131,9 +131,12 @@ app.post("/register-organization", authLimiter, async (req, res) => {
   try {
     connection = await beginTransaction();
 
+    // Auto-generate domain name from organization name
+    const defaultDomain = finalOrgName.toLowerCase().replace(/[^a-z0-9]/g, '') + '.local';
+
     const [orgResult] = await connection.query(
-      "INSERT INTO organizations (org_name) VALUES (?)",
-      [finalOrgName]
+      "INSERT INTO organizations (org_name, domain_name) VALUES (?, ?)",
+      [finalOrgName, defaultDomain]
     );
     const orgId = orgResult.insertId;
 
